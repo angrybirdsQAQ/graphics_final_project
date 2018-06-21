@@ -1,8 +1,13 @@
 #include "../Externals/Include/Include.h"
+
 #include "load_utils.hpp"
 #include "light.h"
 #include "UI.hpp"
+#include "skybox.h"
+#include "water.h"
+#include "rain.h"
 #include <ctime>
+#include <stdlib.h>
 
 #define MENU_TIMER_START 1
 #define MENU_TIMER_STOP 2
@@ -58,6 +63,11 @@ static const GLfloat window_positions[16] =
 	-1.0f,1.0f,0.0f,1.0f,
 	1.0f,1.0f,1.0f,1.0f
 };
+
+//
+GLuint eyepos_link;
+//
+bool rain;
 
 char** loadShaderSource(const char* file)
 {
@@ -151,6 +161,90 @@ void My_Init()
 	light.useDefaultSettings();
 	light.getUniformLocations(program);
    
+	//skybox
+	state_link = glGetUniformLocation(program, "state");
+	eyepos_link = glGetUniformLocation(program, "eyepos");
+	//eyepos_link = glGetAttribLocation(program, "eyepos");
+
+	vector<std::string> faces;
+	faces.push_back("../Assets/skybox/right.jpg");
+	faces.push_back("../Assets/skybox/left.jpg");
+	faces.push_back("../Assets/skybox/top.jpg");
+	faces.push_back("../Assets/skybox/bottom.jpg");
+	faces.push_back("../Assets/skybox/back.jpg");
+	faces.push_back("../Assets/skybox/front.jpg");
+
+	cubemapTexture = loadCubemap(faces);
+
+	glGenVertexArrays(1, &skyvao);
+	glGenBuffers(1, &skyvbo);
+	// Bind the Vertex Array Object first, then bind and set vertex buffer(s) and attribute pointer(s).
+	glBindVertexArray(skyvao);
+
+	glBindBuffer(GL_ARRAY_BUFFER, skyvbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), skyboxVertices, GL_STATIC_DRAW);
+
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+	glEnableVertexAttribArray(0);
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0); // Note that this is allowed, the call to glVertexAttribPointer registered VBO as the currently bound vertex buffer object so afterwards we can safely unbind
+	glBindVertexArray(0); // Unbind VAO (it's always a good thing to unbind any buffer/array to prevent strange bugs)
+
+	//rain
+	/////rain
+
+	// Ground Verticies
+	// Ground Colors
+	//int x, z;
+	//for (z = 0; z < 21; z++) {
+	//	for (x = 0; x < 21; x++) {
+	//		ground_points[x][z][0] = x - 50.0;
+	//		ground_points[x][z][1] = accum;
+	//		ground_points[x][z][2] = z - 50.0;
+
+	//		ground_colors[z][x][0] = 0.0; // red value
+	//		ground_colors[z][x][1] = 0.2; // green value
+	//		ground_colors[z][x][2] = 0.8; // blue value
+	//		ground_colors[z][x][3] = 0.5; // acummulation factor
+	//	}
+	//}
+
+	// Initialize particles
+	rain = false;
+	for (loop = 0; loop < MAX_PARTICLES; loop++) {
+		initParticles(loop);
+	}
+
+	//init water
+	initWave();
+
+	GLfloat materAmbient[] = { 0.76, 0.94, 0.94, 1.0 };
+	GLfloat materSpecular[] = { 0.8, 0.8, 0.9, 1.0 };
+	GLfloat lightDiffuse[] = { 0.7, 0.7, 0.8, 1.0 };
+	GLfloat lightAmbient[] = { 0.0, 0.0, 0.0, 1.0 };
+	GLfloat lightSpecular[] = { 1.0, 1.0, 1.0, 1.0 };
+	GLfloat envirAmbient[] = { 0.76, 0.94, 0.94, 1.0 };
+	glUniform4fv(glGetUniformLocation(program, "materAmbient"), 1, materAmbient);
+	glUniform4fv(glGetUniformLocation(program, "materSpecular"), 1, materSpecular);
+	glUniform4fv(glGetUniformLocation(program, "lightDiffuse"), 1, lightDiffuse);
+	glUniform4fv(glGetUniformLocation(program, "lightAmbient"), 1, lightAmbient);
+	glUniform4fv(glGetUniformLocation(program, "lightSpecular"), 1, lightSpecular);
+	glUniform4fv(glGetUniformLocation(program, "envirAmbient"), 1, envirAmbient);
+
+	names.attributes.position = glGetAttribLocation(program, "position");
+	glGenBuffers(1, &names.vertex_buffer);
+
+	names.attributes.normal = glGetAttribLocation(program, "normal");
+	glGenBuffers(1, &names.normal_buffer);
+
+	glm::mat4 Projection = glm::perspective(45.0f, (float)(SCREEN_WIDTH / SCREEN_HEIGHT), 1.0f, 100.f);
+	glm::mat4 viewTransMat = glm::translate(glm::mat4(1.0f), glm::vec3(-0.0f, -1.0f, -4.5f));
+	glm::mat4 viewRotateMat = glm::rotate(viewTransMat, -45.0f, glm::vec3(1.0f, 0.0f, 0.0f));
+	glm::mat4 ModelViewMat = glm::scale(viewRotateMat, glm::vec3(0.3f, 0.3f, 0.3f));
+	glm::mat3 NormalMat = glm::transpose(glm::inverse(glm::mat3(ModelViewMat)));
+	glUniformMatrix4fv(glGetUniformLocation(program, "modelViewMat"), 1, GL_FALSE, glm::value_ptr(ModelViewMat));
+	glUniformMatrix4fv(glGetUniformLocation(program, "perspProjMat"), 1, GL_FALSE, glm::value_ptr(Projection));
+	glUniformMatrix3fv(glGetUniformLocation(program, "normalMat"), 1, GL_FALSE, glm::value_ptr(NormalMat));
 
 }
 
@@ -181,9 +275,67 @@ void My_Display()
     
 	light.setUniforms();
 	
+
+	//draw skybox
+
+	sky_state = 1;
+	glUniform1i(state_link, sky_state);
+
+	glBindVertexArray(skyvao);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
+	glDrawArrays(GL_TRIANGLES, 0, 36);
+	glBindVertexArray(0);
+
+	sky_state = 0;
+	glUniform1i(state_link, sky_state);
 	
     // render model
 	model->render();
+
+	//draw rain
+	if (rain)
+	{
+		sky_state = 2;
+		glUniform1i(state_link, sky_state);
+		drawRain();
+		sky_state = 0;
+		glUniform1i(state_link, sky_state);
+	}
+
+	//draw water
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glDepthMask(GL_FALSE);
+
+	sky_state = 3;
+	glUniform1i(state_link, sky_state);
+	calcuWave();
+
+	glUniform1f(glGetUniformLocation(program, "time"), values.time);
+
+	glBindBuffer(GL_ARRAY_BUFFER, names.vertex_buffer);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data), vertex_data, GL_STATIC_DRAW);
+	glVertexAttribPointer(names.attributes.position, 3, GL_FLOAT, GL_FALSE, sizeof(GLfloat) * 3, (void*)0);
+	glEnableVertexAttribArray(names.attributes.position);
+
+	glBindBuffer(GL_ARRAY_BUFFER, names.normal_buffer);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(normal_data), normal_data, GL_STATIC_DRAW);
+	glVertexAttribPointer(names.attributes.normal, 3, GL_FLOAT, GL_FALSE, sizeof(GLfloat) * 3, (void*)0);
+	glEnableVertexAttribArray(names.attributes.normal);
+
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, names.normal_texture);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, names.diffuse_texture);
+
+	for (int c = 0; c<(STRIP_COUNT - 1); c++)
+		glDrawArrays(GL_TRIANGLE_STRIP, STRIP_LENGTH * 2 * c, STRIP_LENGTH * 2);
+
+
+	sky_state = 0;
+	glUniform1i(state_link, sky_state);
+	glDepthMask(GL_TRUE);
 
 	//UI
 	glUseProgram(0);
@@ -213,12 +365,12 @@ void My_Mouse(int button, int state, int x, int y)
 	if(state == GLUT_DOWN)
 	{
 		if (ui->click_rain(x, y)) {
-			//â∫âJ
-
+			//
+			rain = true;
 		}
 		else if (ui->click_sun(x, y)) {
 			//ê∞ìV
-
+			rain = false;
 		}
 		
 	}
@@ -387,7 +539,7 @@ int main(int argc, char *argv[])
 	glutKeyboardFunc(My_Keyboard);
 	glutSpecialFunc(My_SpecialKeys);
 	glutTimerFunc(timer_speed, My_Timer, 0); 
-
+	glutIdleFunc(&idleFunc);
     
 	// Enter main event loop.
 	glutMainLoop();
